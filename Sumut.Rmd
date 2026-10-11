@@ -1,0 +1,826 @@
+---
+title: "Project Regresi Spasial"
+author: "Sandra Berliana Putri"
+date: "2024-11-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Packages
+```{r}
+library(spdep)        # Analisis data spasial: spatial autocorrelation, spatial regression
+library(sp)           # Struktur data untuk manipulasi data spasial (poligon, titik, dll)
+library(sf)           # Mengelola data spasial dengan standar Simple Features (sf)
+library(readxl)       # Membaca file Excel (format .xls dan .xlsx)
+library(openxlsx)     # Membuat, membaca, dan menulis file Excel (lebih cepat dari readxl)
+library(corrplot)     # Membuat visualisasi korelasi dalam bentuk plot
+library(DescTools)    # Kumpulan fungsi statistik deskriptif dan inferensial
+library(nortest)      # Melakukan uji normalitas (Anderson-Darling, Lilliefors, dll)
+library(car)          # Fungsi regresi linear dan diagnostik model (vif, durbinWatsonTest, dll)
+library(spatialreg)   # Estimasi model regresi spasial (SAR, SEM, SLM)
+library(lmtest)       # Fungsi untuk menguji model regresi (heteroskedastisitas, serial correlation)
+library(dplyr)        # Manipulasi data seperti filter, select, mutate, dan summarise
+library(RColorBrewer) # Skema palet warna yang dapat digunakan dalam visualisasi
+library(ggplot2)      # Membuat grafik statistik dengan pendekatan Grammar of Graphics
+```
+
+# Import Data
+Data yang digunakan adalah data sosial ekonomi dari kab/kota di Provinsi Sumatera Utara. 
+Peubah - peubah yang digunakan adalah
+Y = Persentase penduduk miskin
+X1 = Rata - rata lama sekolah
+X2 = Pengeluaran per kapita
+X3 = Umur harapan hidup
+X4 = Harapan lama sekolah
+
+## Data
+```{r}
+data <- read_excel("C:\\Users\\ASUS\\Downloads\\Sumut.xlsx")
+head(data)
+```
+
+## Dimensi Data
+```{r}
+dim(data)
+```
+
+Data terdiri dari 33 kab/kota di Provinsi Sumatera Utara
+
+## Peta Kab/Kota
+Berikut ini adalah peta Provinsi Sumatera Utara:
+```{r}
+peta <- st_read("D:/Sem 5/RegSpas/Tugas/UAS/RBI_50K_2023_Sumatera Utara.x26272")
+```
+
+```{r}
+# Filter data untuk menghapus entri dengan NAMOBJ "Sumatera Utara"
+peta <- subset(peta, NAMOBJ != "Sumatera Utara")
+```
+
+```{r}
+peta
+```
+
+```{r}
+plot(peta, main = "Peta Provinsi Sumatera Utara")
+```
+
+```{r}
+plot(peta[1], main = "Peta Provinsi Sumatera Utara (Kab/Kota)")
+```
+
+
+# Eksplorasi Data
+## Cek Missing Value
+```{r}
+data[!complete.cases(data),]
+```
+
+Hasil pengecekan missing value menunjukkan bahwa tidak terdapat missing value pada data.
+
+## Ringkasan Staristik Deskriptif
+```{r}
+summary(data)
+```
+
+```{r}
+# Menunjukkan kab/kota dengan Y/PPM tertinggi
+wilayah_max <- data %>%
+  arrange(desc(data$PPM)) %>%
+  slice(1)
+
+print(paste("Kabupaten/kota dengan Y tertinggi adalah", wilayah_max$`NAMA KABUPATEN`))
+```
+
+```{r}
+# Menunjukkan kab/kota dengan Y/PPM terendah
+wilayah_min <- data %>%
+  arrange(data$PPM) %>%
+  slice(1)
+
+print(paste("Kabupaten/kota dengan Y terendah adalah", wilayah_min$`NAMA KABUPATEN`))
+```
+
+Berdasarkan output di atas diketahui bahwa Y/PPM tertinggi di Provinsi Sumatera Utara adalah Nias Barat sebesar 22.81, sedangkan Y/PPM terendah adalah Deli Serdang sebesar 3.44. Rata-rata Y/PPM kab/kota di Provinsi Sumatera Utara adalah 9.925.
+
+## Boxplot
+```{r}
+par(mfrow=c(1,5))
+boxplot(data$PPM,main = "Sebaran Y/PPM", col="dodgerblue")
+boxplot(data$RLS,main = "Sebaran X1/RLS", col="dodgerblue")
+boxplot(data$PPK,main = "Sebaran X2/PPK", col="dodgerblue")
+boxplot(data$UHH,main = "Sebaran X3/UHH", col="dodgerblue")
+boxplot(data$HLS,main = "Sebaran X4/HLS", col="dodgerblue")
+```
+
+Berdasarkan boxplot di atas dapat diketahui bahwa pada PPM, RLS, dan HLS terdapat pencilan.
+
+## Hubungan antara Peubah Respon dan Peubah Penjelas
+Scatter plot ini untuk melihat pola hubungan Y dengan masing-masing peubah X1, X2, X3, dan X4 serta pola hubungan antar peubah X.
+```{r}
+pairs(data[,2:6], pch = 19, lower.panel = NULL)
+```
+
+Berdasarkan scatter plot di atas, hubungan antara peubah independent dengan dependent serta antar peubah independent kurang terlihat jelas polanya.
+
+```{r}
+corrplot(cor(data[,2:6]), method = "number")
+```
+
+Berdasarkan scatter plot ini, diperoleh nilai korelasi antara PPM atau peubah dependent dengan peubah independent yaitu ada hubungan negatif. Lalu, hubungan antar peubah independent bernilai positif.
+
+```{r}
+cor(data[,2:6])
+```
+
+# Sebaran Spasial Data
+```{r}
+# Gabungkan Data
+combined_data <- peta %>%
+  left_join(data, by = c("NAMOBJ" = "NAMA KABUPATEN"))
+combined_data
+```
+
+## Sebaran Spasial Y/PPM
+```{r}
+library(tmap)
+combined_data <- st_make_valid(combined_data)
+tmap_mode("plot")
+
+# Membuat peta dengan jumlah PPM dengan label nama kabupaten/kota
+tm_shape(combined_data) + 
+  tm_polygons("PPM", style = "quantile", n = 4, 
+              title = "Jumlah PPM Sumatera Utara") + 
+  tm_text("NAMOBJ", size = 0.4, col = "black") +  # Tambahkan nama kabupaten/kota
+  tm_layout(title = "Peta Jumlah PPM Sumatera Utara", 
+            legend.outside = TRUE, 
+            legend.title.size = 1, 
+            legend.text.size = 0.8)
+
+```
+
+Berdasarkan plot di atas, dapat dilihat adanya kecenderungan pola bergerombol dengan wilayah tetangganya pada peubah PPM/Y di Provinsi Sumatera Utara. Hal ini tampak dari gradasi warna yang cenderung mengumpul. Artinya terdapat kemiripan antar kabupaten/kota terhadap sebaran PPM/Y sehingga terindikasi adanya autokorelasi spasial positif.
+
+## Sebaran Spasial X1/RLS
+```{r}
+# Membuat peta dengan jumlah RLS dengan label nama kabupaten/kota
+tm_shape(combined_data) + 
+  tm_polygons("RLS", style = "quantile", n = 4, 
+              title = "Jumlah RLS Sumatera Utara") + 
+  tm_text("NAMOBJ", size = 0.4, col = "black") +  # Tambahkan nama kabupaten/kota
+  tm_layout(title = "Peta Jumlah RLS Sumatera Utara", 
+            legend.outside = TRUE, 
+            legend.title.size = 1, 
+            legend.text.size = 0.8)
+```
+
+## Sebaran Spasial X2/PPK
+```{r}
+# Membuat peta dengan jumlah PPK dengan label nama kabupaten/kota
+tm_shape(combined_data) + 
+  tm_polygons("PPK", style = "quantile", n = 4, 
+              title = "Jumlah PPK Sumatera Utara") + 
+  tm_text("NAMOBJ", size = 0.4, col = "black") +  # Tambahkan nama kabupaten/kota
+  tm_layout(title = "Peta Jumlah PPK Sumatera Utara", 
+            legend.outside = TRUE, 
+            legend.title.size = 1, 
+            legend.text.size = 0.8)
+```
+
+## Sebaran Spasial X3/UHH
+```{r}
+# Membuat peta dengan jumlah UHH dengan label nama kabupaten/kota
+tm_shape(combined_data) + 
+  tm_polygons("UHH", style = "quantile", n = 4, 
+              title = "Jumlah UHH Sumatera Utara") + 
+  tm_text("NAMOBJ", size = 0.4, col = "black") +  # Tambahkan nama kabupaten/kota
+  tm_layout(title = "Peta Jumlah UHH Sumatera Utara", 
+            legend.outside = TRUE, 
+            legend.title.size = 1, 
+            legend.text.size = 0.8)
+```
+
+## Sebaran Spasial X4/HLS
+```{r}
+# Membuat peta dengan jumlah HLS dengan label nama kabupaten/kota
+tm_shape(combined_data) + 
+  tm_polygons("HLS", style = "quantile", n = 4, 
+              title = "Jumlah HLS Sumatera Utara") + 
+  tm_text("NAMOBJ", size = 0.4, col = "black") +  # Tambahkan nama kabupaten/kota
+  tm_layout(title = "Peta Jumlah HLS Sumatera Utara", 
+            legend.outside = TRUE, 
+            legend.title.size = 1, 
+            legend.text.size = 0.8)
+```
+
+# Matriks Pembobot Spasial
+Matriks pembobot spasial dapat berdasarkan aspek ketetanggaan dan aspek jarak. Matriks ketetanggaan yang dicobakan dalam analisis ini yaitu rook contiguity dan queen contiguity sedangkan berdasarkan aspek jarak digunakan k-nearest neighbor (KNN), radial distance weight (RDW), inverse distance weight (IDW), dan exponential distance weight (IDW).
+
+## Matriks Pembobot Berdasarkan Ketetanggaan
+
+### Queen Contiguity
+Matriks pembobot spasial queen contiguity lebih luas daripada rook contiguity karena wilayah-wilayah dianggap bertetangga jika mereka berbagi sisi atau titik sudut.
+
+Karakteristik:
+
+Dua poligon dianggap bertetangga jika mereka berbagi batas (baik sisi maupun titik sudut).
+
+Jika dua wilayah memiliki titik atau sisi yang bersinggungan, maka elemen matriks pembobot diberi nilai 1.
+
+```{r}
+# Memvalidasi geometri dalam objek sf
+peta <- st_make_valid(peta)
+# Konversi objek sf ke objek sp
+sp.peta <- as(peta, "Spatial")
+
+# Mengakses slot polygons dari objek sp
+sp.polygons <- SpatialPolygons(sp.peta@polygons)
+queen <- poly2nb(sp.peta, queen = T)
+```
+
+```{r}
+queen
+```
+
+```{r}
+W.queen <- nb2listw(queen, style='W',zero.policy=TRUE)
+qc = moran.test(data$PPM, W.queen,randomisation=T,
+alternative="greater", zero.policy = TRUE)
+qc
+```
+
+```{r}
+moran.mc(data$PPM, listw = W.queen, zero.policy = TRUE, nsim = 99)
+```
+
+### Rook Contiguity
+Matriks pembobot spasial rook contiguity didasarkan pada konsep bahwa dua wilayah dianggap bertetangga jika mereka berbagi sisi batas.
+
+Karakteristik:
+
+Dua poligon dianggap bertetangga jika mereka memiliki batas yang bersinggungan di sepanjang sisi yang sama (tidak hanya di titik sudut).
+
+Jika dua wilayah bertetangga, nilai elemen matriks pembobot adalah 1; jika tidak, maka nilai elemen tersebut adalah 0.
+
+```{r}
+rook <- poly2nb(sp.peta, queen = F)
+```
+
+```{r}
+rook
+```
+
+```{r}
+W.rook <- nb2listw(rook, style='W',zero.policy=TRUE)
+rc = moran.test(data$PPM, W.rook,randomisation=T,
+alternative="greater", zero.policy = TRUE)
+rc
+```
+
+```{r}
+moran.mc(data$PPM, listw = W.rook, zero.policy = TRUE, nsim = 99)
+```
+
+## Matriks Pembobot Berdasarkan Jarak
+```{r}
+# Menghitung centroid dari setiap unit spasial
+centroids <- st_centroid(peta)
+```
+
+```{r}
+# Ekstrak koordinat centroid
+longlat <- st_coordinates(centroids)
+
+# Tambahkan koordinat long dan lat ke objek peta
+peta$long <- longlat[, 1]  # Kolom X (long)
+peta$lat  <- longlat[, 2]  # Kolom Y (lat)
+```
+
+```{r}
+coords <- peta[c("long","lat")]
+#class(coords)
+koord <- as.data.frame(coords)
+jarak<-dist(longlat, method = "euclidean")
+m.jarak<-as.matrix(jarak)
+```
+
+### K-Nearest Neighbor
+Matriks bobot k-nearest neighbor menentukan tetangga berdasarkan sejumlah tetangga terdekat (k) yang dipilih untuk setiap titik atau wilayah.
+
+Karakteristik:
+
+Untuk setiap titik/wilayah, tetangga yang dipilih adalah titik/wilayah yang paling dekat (berdasarkan jarak Euclidean atau jarak lainnya).
+
+Nilai matriks bobot diberikan 1 jika suatu titik berada dalam k tetangga terdekat dari titik lain, dan 0 jika tidak.
+
+Contoh: Misalkan k = 3, artinya setiap titik akan memiliki 3 tetangga terdekat. Matriks bobot akan memiliki 1 di elemen yang mewakili tetangga terdekat, dan 0 di elemen lainnya.
+
+Digunakan 5 tetangga terdekat (k=5).
+```{r}
+# k = 5
+W.knn<-knn2nb(knearneigh(longlat,k=5,longlat=TRUE))
+W.knn.s <- nb2listw(W.knn,style='W')
+
+MI.knn <- moran(data$PPM,W.knn.s,n=length(W.knn.s$neighbours),S0=Szero(W.knn.s))
+mt1 = moran.test(data$PPM,W.knn.s,randomisation = T,alternative = "greater")
+mt1
+```
+
+Digunakan 3 tetangga terdekat (k=3).
+```{r}
+# k = 3
+W.knn.3 <-knn2nb(knearneigh(longlat,k=3,longlat=TRUE))
+W.knn.3.s <- nb2listw(W.knn,style='W')
+
+MI.knn.3 <- moran(data$PPM,W.knn.s,n=length(W.knn.s$neighbours),S0=Szero(W.knn.s))
+mt1.3 = moran.test(data$PPM,W.knn.s,randomisation = T,alternative = "greater")
+mt1.3
+```
+
+### Radial Distance Weight
+Matriks bobot radial distance mendefinisikan tetangga berdasarkan jarak geografis. Setiap titik atau wilayah dianggap sebagai tetangga jika jaraknya dari titik/wilayah pusat berada dalam jarak radius tertentu.
+
+Karakteristik:
+
+Tetangga dipilih berdasarkan jarak dari titik pusat hingga ke titik lain dalam radius tertentu (r). Jika titik lain berada dalam radius tersebut, maka nilai dalam matriks bobot adalah 1; jika tidak, maka 0.
+
+Jarak dihitung berdasarkan metrik spasial seperti jarak Euclidean.
+
+Contoh: Jika radius yang ditentukan adalah 10 km, maka setiap titik atau wilayah yang berada dalam jarak 10 km dari titik pusat akan dianggap sebagai tetangga, dan bobot matriks akan diberikan 1.
+
+Ditentukan nilai ambang dmax adalah 105 km (d=105). Nilai ini menggambarkan nilai jarak maksimum untuk menentukan dependensi spasial anatar lokasi-i terhadap lokasi-j.
+
+```{r}
+W.rdw <-dnearneigh(longlat,0,105,longlat=TRUE)
+W.rdw.s <- nb2listw(W.rdw,style="W", zero.policy=TRUE)
+
+MI.rdw <- moran(data$PPM,W.rdw.s,n=length(W.rdw.s$neighbours),S0=Szero(W.rdw.s))
+mt2 = moran.test(data$PPM,W.rdw.s,randomisation = T,alternative = "greater")
+mt2
+```
+
+## Inverse Distance Weight
+Matriks pembobot Inverse Distance Weight (IDW) menentukan bobot berdasarkan kebalikan dari jarak antar titik atau wilayah. Semakin dekat dua titik, semakin besar bobot yang diberikan.
+
+Ditentukan nilai alpha=1 dan alpha=2
+
+```{r}
+alpha1=1
+W.idw <-1/(m.jarak^alpha1)
+diag(W.idw)<-0
+rtot<-rowSums(W.idw,na.rm=TRUE)
+W.idw.sd<-W.idw/rtot #row-normalized
+W.idw.s = mat2listw(W.idw.sd,style='W')
+
+MI.idw <- moran(data$PPM,W.idw.s,n=length(W.idw.s$neighbours),S0=Szero(W.idw.s))
+mt3 = moran.test(data$PPM,W.idw.s,randomisation = T,alternative = "greater")
+mt3
+```
+
+```{r}
+alpha2=2
+W.idw2<-1/(m.jarak^alpha2)
+diag(W.idw2)<-0
+rtot<-rowSums(W.idw2,na.rm=TRUE)
+W.idw2.sd<-W.idw2/rtot #row-normalized
+W.idw2.s = mat2listw(W.idw2.sd,style='W')
+
+MI.idw2 <- moran(data$PPM,W.idw2.s,n=length(W.idw2.s$neighbours),S0=Szero(W.idw2.s))
+mt4 = moran.test(data$PPM,W.idw2.s,randomisation = T,alternative = "greater")
+mt4
+```
+
+## Exponential Distance Weight
+Matriks exponential distance weight memberikan bobot yang menurun secara eksponensial seiring dengan peningkatan jarak antar unit spasial. Ini mirip dengan inverse distance weight, tetapi penurunan bobot terhadap jarak lebih tajam.
+
+Ditentukan alpha=1 dan alpha=2
+```{r}
+alpha=1
+W.edw<-exp((-alpha)*m.jarak)
+diag(W.edw)<-0
+rtot<-rowSums(W.edw,na.rm=TRUE)
+W.edw.sd<-W.edw/rtot #row-normalized
+W.edw.s = mat2listw(W.edw.sd,style='W')
+
+MI.edw <- moran(data$PPM,W.edw.s,n=length(W.edw.s$neighbours),S0=Szero(W.edw.s))
+mt5 = moran.test(data$PPM,W.edw.s,randomisation = T,alternative = "greater")
+mt5
+```
+
+```{r}
+alpha2=2
+W.edw2<-exp((-alpha2)*m.jarak)
+diag(W.edw2)<-0
+rtot<-rowSums(W.edw2,na.rm=TRUE)
+W.edw2.sd<-W.edw2/rtot #row-normalized
+W.edw2.s = mat2listw(W.edw2.sd,style='W')
+MI.edw2 <- moran(data$PPM,W.edw2.s,n=length(W.edw2.s$neighbours),S0=Szero(W.edw2.s))
+mt6 = moran.test(data$PPM,W.edw2.s,randomisation = T,alternative = "greater")
+mt6
+```
+
+## Pemilihan Matriks Pembobot Terbaik
+Matriks pembobot spasial yang dipilih yaitu matriks yang menghasilkan nilai autokorelasi spasial yang tertinggi. Pemilihan matriks bobot juga dapat didasarkan pada matriks bobot dengan nilai indeks moran yang signifikan pada taraf 5%.
+
+```{r}
+MatriksBobot <- c("K-Nearest Neighbor (k=5)",
+                  "Radial Distance Weight (dmax=105)",
+                  "Invers Distance Weight (alpha=1)",
+                  "Invers Distance Weight (alpha=2)",
+                  "Exponential Distance Weight (alpha=1)",
+                  "Exponential Distance Weight (alpha=2)",
+                  "Rook Contiguity",
+                  "Queen Contiguity")
+IndeksMoran <- c(MI.knn$I,MI.rdw$I,MI.idw$I,MI.idw2$I,MI.edw$I,MI.edw2$I,rc$estimate[1],qc$estimate[1])
+pv = c(mt1$p.value,mt2$p.value,mt3$p.value,mt4$p.value,mt5$p.value,mt6$p.value,rc$p.value,qc$p.value)
+Matriks = cbind.data.frame(MatriksBobot, IndeksMoran,"p-value"=pv)
+colnames(Matriks) <-c("Matriks Bobot", "Indeks Moran", "p-value")
+Matriks
+```
+
+```{r}
+Matriks[Matriks$`p-value`< 0.05,]
+```
+
+Berdasakan hasil di atas, Matriks bobot yang memiliki nilai Indeks Moran yang signifikan pada taraf 5% adalah k-nearest neighboor (k=5), radial distance weight (dmax=105), invers distance weight (alpha = 1 dan alpha = 2), exponential distance weight (alpha = 1 dan alpha = 2), rook contiguity, dan queen contiguity.
+
+Matriks pembobot spasial yang memiliki Indeks Moran tertinggi adalah rook contiguity dan queen contiguity sehingga matriks tersebut dapat dipilih menjadi matriks pembobot spasial terbaik diantara matriks pembobot spasial lainnya. Selanjutnya matriks pembobot yang digunakan dalam analisis adalah queen contiguity.
+
+# Model Regresi Klasik (OLS)
+Pemodelan Ordinary Least Square dan uji asumsi multikolinearitas, autokorelasi spasial, kehomogenan ragam, kenormalan sisaan.
+
+Matriks Bobot yang digunakan adalah queen contiguity.
+
+## Metode OLS
+```{r}
+ols <- lm(PPM ~ RLS + PPK + UHH + HLS, data = data)
+summary(ols)
+```
+
+```{r}
+print(paste("Nilai AIC OLS", AIC(ols)))
+```
+
+## Model Diagnostics
+### Uji Normalitas Sisaan
+H0 : sisaan model menyebar normal 
+H1 : sisaan model tidak menyebar normal
+
+Tolak H0 jika p-value < 0.05
+
+```{r}
+err.ols <- residuals(ols)
+ad.test(err.ols)
+```
+
+Karena p-value < 5%, maka tolak H0. Artinya sisaan tidak menyebar normal.
+
+```{r}
+hist(err.ols)
+```
+
+```{r}
+qqnorm(err.ols,datax=T)
+qqline(rnorm(length(err.ols),mean(err.ols),sd(err.ols)),datax=T, col="red")
+```
+
+Berdasarkan plot histogram dan normal Q-Q plot diatas terlihat bahwa sisaan menyebar normal.
+
+### Uji Kehomogenan Ragam
+H0 : Ragam Sisaan Homogen 
+H1 : Ragam Sisaan Tidak Homogen
+```{r}
+lmtest::bptest(ols)
+```
+Karena p-value > 0.05, maka gagal tolak H0. Artinya ragam sisaan homogen
+
+### Uji Multikolinearitas
+Pada regresi linear berganda perlu diperiksa persyaratan tidak adanya multikolinearitas antar peubah penjelas agar koefisien regresi yang diperoleh dapat dikatakan valid.
+
+Pemeriksaan multikolinearitas dapat dilakukan dengan menggunakan nilai variance inflation factor (VIF). Multikolinearitas terjadi jika nilai VIF > 5.
+
+```{r}
+car::vif(ols)
+```
+Berdasarkan perhitungan, diperoleh nilai VIF < 5 yang menunjukkan tidak terjadi multikolinearitas antar peubah penjelas.
+
+### Uji Autokorelasi
+H0 : Antargalat tidak memiliki autokorelasi 
+H1 : Antargalat berkorelasi
+```{r}
+dwtest(ols)
+```
+
+Karena p-value > 0.05, maka gagal tolak H0. Artinya, antargalat tidak berkorelasi.
+
+# Pengujian Efek Spasial
+## Efek Dependensi Spasial
+Untuk menentukan model dependensi spasial yang sesuai dengan data, terlebih dahulu dilakukan uji dependensi spasial. Secara umum ada dua macam uji dependensi spasia, yaitu Indeks Moran dan Uji Pengganda Lagrange (Lagrange Multiplier Test).
+
+## Uji Indeks Moran
+Pengujian autokorelasi spasial menggunakan Indeks Moran yang memerlukan matriks pembobot spasial. Dalam kasus ini, digunakan matriks bobot terbaik yang telah diperoleh sebelumnya, yaitu radial distance weight.
+
+H0 : Tidak ada autokorelasi spasial
+
+H1 : Ada autokorelasi spasial
+
+### Uji Indeks Moran pada Galat Model Regresi
+```{r}
+ww = W.queen
+lm.morantest(ols, listw=ww, alternative="two.sided")
+```
+
+```{r}
+err.ols <- residuals(ols)
+merr <- moran.test(err.ols, ww,randomisation=T, 
+           alternative="two.sided")
+merr
+```
+
+### Uji Indeks Moran pada peubah Y/PPM
+```{r}
+my <- moran.test(data$PPM, ww,randomisation=T, 
+           alternative="two.sided")
+my
+```
+
+```{r}
+moran.plot(data$PPM, ww, labels=data$`NAMA KABUPATEN`)
+```
+
+### Uji Indeks Moran pada peubah X1/RLS
+```{r}
+mx1 <- moran.test(data$RLS, ww,randomisation=T, 
+           alternative="two.sided")
+mx1
+```
+
+### Uji Indeks Moran pada peubah X2/PPK
+```{r}
+mx2 <- moran.test(data$PPK, ww,randomisation=T, 
+           alternative="two.sided")
+mx2
+```
+
+### Uji Indeks Moran pada peubah X3/UHH
+```{r}
+mx3 <- moran.test(data$UHH, ww,randomisation=T, 
+           alternative="two.sided")
+mx3
+```
+
+### Uji Indeks Moran pada peubah X4/HLS
+```{r}
+mx4 <- moran.test(data$HLS, ww,randomisation=T, 
+           alternative="two.sided")
+mx4
+```
+
+Berikut ini adalah hasil uji autokorelasi pada peubah respon, peubah penjelas, dan sisaan regresi
+
+```{r}
+Peubah = c("Y", "X1", "X2","X3","X4", "Sisaan")
+Indeks_Moran = c(my$estimate[1], mx1$estimate[1], mx2$estimate[1],mx3$estimate[1],mx4$estimate[1], merr$estimate[1])
+p_value = c(my$p.value, mx1$p.value, mx2$p.value,mx3$p.value,mx4$p.value, merr$p.value)
+
+df1 = cbind.data.frame(Peubah, Indeks_Moran, p_value)
+colnames(df1) <- c("Peubah", "Indeks Moran", "p-value")
+df1
+```
+
+
+Berdasarkan hasil pengujian Indeks Moran di atas menunjukkan bahwa nilai indeks Moran pada peubah Y/PPM, X1/RLS, X2/PPK, dan X3/UHH model regresi memiliki nilai p-value < 0.05 maka Tolak H0 sehingga autokorelasi spasial pada peubah tersebut berpengaruh nyata. Hal ini mengindikasikan bahwa terdapat ketergantungan spasial pada peubah Y/PPM, X1/RLS, X2/PPK, dan X3/UHH regresi klasik. Terlihat pula nilai indeks moran positif pada peubah Y/PPM, X1/RLS, X2/PPK, dan X3/UHH regresi klasik yang menunjukkan adanya autokorelasi positif.
+
+Sedangkan, nilai indeks moran pada peubah X4/HLS dan sisaan model memiliki p-value > 0.05 maka gagal tolak H0 artinya tidak terdapat autokorelasi spasial peubah X4/HLS dan sisaan model taraf nyata 5%.
+
+Oleh karenanya, untuk mencari model yang lebih baik, kita dapat melakukan uji LM (lagrange multiplier) untuk mengidentifikasi model dependensi spasial yang dapat digunakan pada kasus ini.
+
+## Uji Lagrange Multiplier
+```{r}
+model <- lm.LMtests(ols,listw=ww,zero.policy = TRUE, test=c("LMerr","RLMerr","LMlag","RLMlag","SARMA"))
+```
+
+```{r}
+summary(model)
+```
+
+Output menunjukkan bahwa hasil uji robust LM SAR, robust LM SEM, dan GSM signifikan pada taraf 5%. Berdasarkan skema tersebut, maka kita dapat mencoba kandidat model SAR, SEM, dan SARMA.
+
+# Efek Heterogenitas Spasial
+H0 : Ragam Sisaan Homogen
+H1 : Ragam Sisaan Tidak Homogen
+```{r}
+lmtest::bptest(ols)
+```
+
+Karena p-value > 0.05, maka Gagal Tolak H0. Artinya ragam sisaan homogen atau tidak terdapat efek heterogenitas spasial.
+
+# Model Regresi Spasial
+## Model SAR 
+```{r}
+sar <- lagsarlm(PPM ~ RLS + PPK + UHH + HLS, data = data, listw = ww, zero.policy=TRUE)
+summary(sar, Nagelkerke = T)
+```
+
+Output di atas memperlihatkan bahwa koefisien Rho pada model SAR signifikan, dengan nilai AIC sebesar 160.66. Selain itu, terlihat pula hasil uji autokorelasi pada sisaan model memperlihatkan nilai p-value sebesar 0.11115, artinya tidak terdapat autokorelasi pada sisaan.
+
+Uji Asumsi Model SAR
+
+### Asumsi Kenormalan Sisaan
+
+H0 : galat model menyebar normal
+
+H1 : galat model tidak menyebar normal
+```{r}
+err.sar<-residuals(sar)
+ad.test(err.sar)
+```
+
+Karena p-value < 5%, maka tolak H0. Artinya sisaan tidak menyebar normal.
+
+### Asumsi Kehomogenan Ragam
+
+H0 : Ragam Sisaan Homogen
+
+H1 : Ragam Sisaan Tidak Homogen
+```{r}
+bptest.Sarlm(sar)
+```
+
+Karena p-value > 5%, maka gagal tolak H0. Artinya ragam sisaan homogen.
+
+### Uji Kebebasan Sisaan
+
+H0: Tidak ada autokorelasi spasial
+
+H1: ada autokorelasi spasial
+```{r}
+moran.test(err.sar, ww, alternative="two.sided")
+```
+
+Karena p-value > 0.05, maka tolak H0 artinya tidak terdapat autokorelasi spasial pada sisaan model SAR.
+
+## Model SEM
+```{r}
+sem <- errorsarlm(PPM ~ RLS + PPK + UHH + HLS,data=data,listw=ww)
+summary(sem)
+```
+
+Output di atas menunjukkan bahwa koefisien Lambda tidak signifikan pada taraf nyata 5%. AIC model SEM adalah 164.72. Selanjutnya kita akan coba memeriksa sisaan model SEM ini.
+
+Uji Asumsi Model SEM
+
+### Asumsi Kenormalan Sisaan
+
+H0 : Sisaan model menyebar normal
+
+H1 : Sisaaan model tidak menyebar normal
+```{r}
+err.sem<-residuals(sem)
+ad.test(err.sem)
+```
+
+Karena p-value < 0.05 maka tolak H0, artinya sisaan tidak menyebar normal.
+
+### Asumsi Kehomogenan Ragam
+
+H0 : Ragam Sisaan Homogen
+
+H1 : Ragam Sisaan Tidak Homogen
+```{r}
+bptest.Sarlm(sem)
+```
+
+Karena p-value > 0.05 maka gagal tolak H0, artinya ragam sisaan homogen.
+
+### Asumsi Kebesaan Sisaan
+
+H0 : Tidak Ada autokorelasi spasial
+
+H1 : Ada autokorelasi spasial
+```{r}
+moran.test(err.sem, ww, alternative="two.sided")
+```
+
+Karena p-value > 0.05, maka gagal tolak H0 artinya tidak terdapat autokorelasi spasial pada sisaan model SEM. 
+
+## Model SARMA/GSM
+```{r}
+SARMA <- sacsarlm(PPM ~ RLS + PPK + UHH + HLS,data=data,ww)
+summary(SARMA)
+```
+
+Output di atas memperlihatkan bahwa kedua koefisien dependensi spasial signifikan pada taraf nyata 5%, yaitu Rho dan Lambda. AIC model SARMA adalah sebesar 158.72.
+
+Uji Asumsi Model SARMA
+
+### Asumsi Kenormalan Sisaan
+
+H0 : Sisaan model menyebar normal
+
+H1 : Sisaaan model tidak menyebar normal
+```{r}
+err.SARMA<-residuals(SARMA)
+ad.test(err.SARMA)
+```
+
+Karena p-value > 0.05 maka gagal tolak H0, artinya sisaan menyebar normal.
+
+### Asumsi Kehomogenan Ragam
+
+H0 : Ragam Sisaan Homogen
+
+H1 : Ragam Sisaan Tidak Homogen
+```{r}
+bptest.Sarlm(SARMA)
+```
+
+Karena p-value > 0.05 maka gagal tolak H0, artinya ragam sisaan homogen.
+
+### Asumsi Kebesaan Sisaan
+
+H0 : Tidak Ada autokorelasi spasial
+
+H1 : Ada autokorelasi spasial
+```{r}
+moran.test(err.SARMA, ww, alternative="two.sided")
+```
+
+Karena p-value > 0.05, maka gagal tolak H0 artinya tidak terdapat autokorelasi spasial pada sisaan model SARMA. Artinya model SARMA telah memenuhi asumsi kenormalan, kehomogenan ragam, dan kebebasan pada taraf nyata 5%.
+
+# Goodness of Fits (Model Terbaik)
+Model regresi terbaik ditentukan berdasarkan nilai AIC yang dihasilkan dari masing-masing model. Model terbaik akan menghasilkan nilai AIC yang kecil. Hasilnya adalah sebagai berikut:
+
+```{r}
+df <- data.frame("Model" = c("OLS (Regresi KlasiK)","SAR","SEM","SARMA"),
+           "AIC" = c(AIC(ols),AIC(sar),AIC(sem), AIC(SARMA)),"p-value dari Rho"=c("NA","0.043868","NA","0.00071879"), "p-value dari Lambda"=c("NA","NA","0.012583","0.0052028"), "Kenormalan (p-value)"=c("0.0333","0.02576","0.03355","0.09234"), "Homoskedastisitas (p-value)"=c("0.5002","0.3039","0.4956","0.08786"), "Kebebasan Sisaan (p-value)"=c("0.1009","0.4188","0.8132","0.5994"))
+
+df
+```
+
+Berdasarkan output diatas, model SARMA adalah model yang terbaik berdasarkan nilai AIC-nya. Hal ini juga sejalan dengan Rho dan Lambda yang signifikan (p-value 0.00). Kemudian, hasil uji asumsi sisaan juga menunjukkan bahwa model SARMA telah memenuhi asumsi kenormalan, kehomogenan ragam, dan kebebasan.
+
+# Interpretasi dan Kesimpulan
+Karena Model SARMA memiliki spillover, maka perlu diinterpretasi dengan memperhatikan spillovernya. Interpretasi koefisien pada model regresi spasial dijelaskan dengan efek langsung, tidak langsung, dan total dari setiap peubah.
+
+```{r}
+sum <- summary(SARMA)
+sum
+```
+
+```{r}
+# Spill over
+Im = impacts(SARMA, listw = ww)
+Im
+```
+
+```{r}
+# Efek Umpan Balik
+koef = sum$coefficients[-1]
+diref = Im$direct
+umbal = diref-koef
+cbind.data.frame(Koefisien=koef,EfekLangsung=diref,UmpanBalik=umbal)
+```
+
+Koefisien = C
+Efek Langsung = DL
+Efek Umpan Balik = FB
+Efek Tidak Langsung (ID) = DL * (FB)^0.321
+Efek Total (T) = DL + ID
+
+Berikut ini adalah interpretasinya:
+
+### Peubah Penjelas X1/Rata - rata Lama Sekolah (RLS)
+
+Pengaruh langsung dari peubah X1 adalah sebesar -1.4819, artinya Jika rata-rata X1 di wilayah-i meningkat satu satuan, maka rata-rata Y di wilayah tersebut akan menurun sebesar 1.4819, jika peubah lainnya tetap.
+
+Pengaruh tidak langsung dari peubah X1 bernilai 0.78998, artinya jika Jika rata-rata X1 di wilayah-i meningkat satu satuan, maka rata-rata Y di wilayah-j (wilayah yang berbeda) akan meningkat sebesar 0.78998, jika peubah lainnya tetap.
+
+Pengaruh total dari peubah X1 bernilai -0.692, artinya apabila peningkatan X1 terjadi di seluruh wilayah maka akan menurunkan Y diseluruh wilayah dengan rata-rata penurunan sebesar 0.692. Efek umpan baliknya sebesar 0.00996.
+
+### Peubah Penjelas X2/Pengeluaran per Kapita
+
+Pengaruh langsung dari peubah X2 adalah sebesar -0.00029, artinya Jika rata-rata X2 di wilayah-i meningkat satu satuan, maka rata-rata Y di wilayah tersebut akan menurun sebesar 0.00029, jika peubah lainnya tetap.
+
+Pengaruh tidak langsung dari X2 tersebut bernilai 0.0001, artinya jika Jika rata-rata X2 di wilayah-i meningkat satu satuan, maka rata-rata Y di wilayah-j (wilayah yang berbeda) akan meningkat sebesar 0.0001, jika peubah lainnya tetap.
+
+Pengaruh total dari peubah X2 adalah sebesar -0.00019, artinya apabila peningkatan X2 terjadi di seluruh wilayah maka akan menurunkan Y diseluruh wilayah dengan rata-rata penurunan sebesar 0.00019, jika peubah lainnya tetap. Efek umpan baliknya sebesar 0.0484.
+
+### Peubah Penjelas X3/Umur Harapan Hidup (UHH)
+
+Pengaruh langsung dari peubah X3 adalah sebesar 0.5103, artinya Jika rata-rata X3 di wilayah-i meningkat satu satuan, maka rata-rata Y di wilayah tersebut akan meningkat sebesar 0.5103, jika peubah lainnya tetap.
+
+Pengaruh tidak langsung dari peubah X3 bernilai 0.193, artinya jika Jika rata-rata X3 di wilayah-i meningkat satu satuan, maka rata-rata Y di wilayah-j (wilayah yang berbeda) akan meningkat sebesar 0.193, jika peubah lainnya tetap.
+
+Pengaruh total dari peubah X3 bernilai 0.7033, artinya apabila peningkatan X3 terjadi di seluruh wilayah maka akan menurunkan Y diseluruh wilayah dengan rata-rata peningkatan sebesar 0.7033. Efek umpan baliknya sebesar -0.0000276.
+
+### Peubah Penjelas X4/Harapan Lama Sekolah
+
+Pengaruh langsung dari peubah X4 adalah sebesar 0.1051, artinya Jika rata-rata X4 di wilayah-i meningkat satu satuan, maka rata-rata Y di wilayah tersebut akan meningkat sebesar 0.1051, jika peubah lainnya tetap.
+
+Pengaruh tidak langsung dari X4 tersebut bernilai 0.0239, artinya jika Jika rata-rata X4 di wilayah-i meningkat satu satuan, maka rata-rata Y di wilayah-j (wilayah yang berbeda) akan meningkat sebesar 0.0239, jika peubah lainnya tetap.
+
+Pengaruh total dari peubah X4 adalah sebesar 0.128998, artinya apabila peningkatan X4 terjadi di seluruh wilayah maka akan meningkatkan Y diseluruh wilayah dengan rata-rata peningkatan sebesar 0.128998, jika peubah lainnya tetap. Efek umpan baliknya sebesar -0.141.
